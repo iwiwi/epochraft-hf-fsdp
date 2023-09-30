@@ -1,0 +1,62 @@
+out_dir: ./out/gpt2_testrun
+wandb_url: https://stability.wandb.io
+wandb_entity: null
+wandb_project: epochraft-hf-fsdp
+wandb_name: gpt2_testrun.yaml
+
+model: gpt2
+tokenizer: gpt2
+transformer_blocks_path: transformer.h
+fsdp_sharding_strategy: SHARD_GRAD_OP
+
+seq_len: 1024
+global_batch_size: 64
+micro_batch_size: 8
+steps: 100
+
+ckpt_steps: 50
+val_steps: 20
+
+zerolr_warmup_steps: 5
+linear_warmup_steps: 10
+cooldown_steps: 10
+max_lr: 0.0001
+min_lr: 0.00001
+weight_decay: 0.1
+grad_clip: 1.0
+beta1: 0.9
+beta2: 0.95
+eps: 0.000001
+
+val_samples: 64
+val_dataset:
+  - name: GitHub
+    url: https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_08cdfa755e6d4d89b673d5bd1acee5f6.sampled.jsonl
+  - name: ArXiv
+    url: https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_023827cd-7ee8-42e6-aa7b-661731f4c70f.jsonl
+  - name: C4
+    url: https://data.together.xyz/redpajama-data-1T/v1.0.0/c4/c4-train.00000-of-01024.jsonl
+
+train_dataset:
+- name: GitHub
+  weight: 1
+  urls:
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_0f27d10d846a473b96070c3394832f32.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_0f979046c8e64e0fb5843d2634a9957d.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_10f129bfd0af45caa9cd72aa9d863ec5.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_11a1943edfa349c7939382799599eed6.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_17197bd2478044bebd9ff4634b6dfcee.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_1d750c0ce39d40c6bc20bad9469e5a99.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_21078cf63afb4d9eb4a7876f726a7226.sampled.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/github/filtered_216883d3a669406699428bc485a4c228.sampled.jsonl
+- name: ArXiv
+  weight: 1
+  urls:
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_024de5df-1b7f-447c-8c3a-51407d8d6732.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_03232e26-be3f-4a28-a5d2-ee1d8c0e9831.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_034e819a-cfcb-43c6-ad25-0232ad48823c.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_077ae8de-a68e-47e7-95a6-6d82f8f4eeb9.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_0af50072-df4c-4084-a833-cebbd046e70e.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_0de84cfc-c080-471f-b139-1bf061db4feb.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_0fbdd8ad-32d8-4228-9a40-e09dde689760.jsonl
+  - https://data.together.xyz/redpajama-data-1T/v1.0.0/arxiv/arxiv_11c659c1-ffbf-4455-abfd-058f6bbf4bb2.jsonl

@@ -26,8 +26,8 @@ logger = getLogger(__name__)
 @dataclass
 class Config:
     out_dir: Path
-    wandb_url: str
-    wandb_entity: str
+    wandb_url: Optional[str]
+    wandb_entity: Optional[str]
     wandb_project: str
     wandb_name: str
 
