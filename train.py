@@ -25,6 +25,7 @@ logger = getLogger(__name__)
 
 @dataclass
 class Config:
+    load_dir: Optional[Path]  # Path to a checkpoint directory
     save_dir: Path
 
     wandb_url: Optional[str]
@@ -99,6 +100,14 @@ class Trainer:
         )
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
         logger.info(f"Model class: {type(model)}, block class: {layer_cls}")
+
+        if config.load_dir:
+            ckpt_path = config.load_dir / "model.pth"
+            logger.info(f"Loading model state_dict from: {ckpt_path}")
+            state_dict = torch.load(ckpt_path, map_location="cpu")
+            model.load_state_dict(state_dict)
+            del state_dict
+
         model = fsdp.setup_fsdp(model, config.fsdp_sharding_strategy, layer_cls)
         fsdp.apply_fsdp_checkpointing(model, layer_cls)
         self.model = model
@@ -122,6 +131,11 @@ class Trainer:
         assert config.global_batch_size % (config.micro_batch_size * world_size) == 0
         self.grad_acc_steps = config.global_batch_size // config.micro_batch_size // world_size
 
+        if config.load_dir:
+            ckpt_path = config.load_dir / "optimizer.pth"
+            logger.info(f"Loading optimizer state_dict from: {ckpt_path}")
+            fsdp.load_optimizer_state_dict(self.model, self.optimizer, ckpt_path)
+
         # Datasets
         self.train_dataset = data.construct_training_dataset(
             config.train_dataset,
@@ -140,8 +154,22 @@ class Trainer:
             config.micro_batch_size,
             config.val_samples,
         )
+        if config.load_dir:
+            rank = fsdp.get_rank()
+            ckpt_path = config.load_dir / f"train_iter_rank{rank:04d}.pth"
+            logger.info("Loading train_iter state_dict from: {ckpt_path}")
+            self.train_iter_state_dict = torch.load(ckpt_path)
+        else:
+            self.train_iter_state_dict = None
 
-        self.state = TrainerState(step=0, next_batch=None)
+        # State
+        if config.load_dir:
+            ckpt_path = config.load_dir / "trainer.pth"
+            logger.info(f"Loading trainer state from: {ckpt_path}")
+            state_dict = torch.load(ckpt_path)
+            self.state: TrainerState = state_dict
+        else:
+            self.state = TrainerState(step=0, next_batch=None)
 
     def load_checkpoint(self, path: Path) -> None:
         # TODO: implement this when necessary
@@ -174,7 +202,7 @@ class Trainer:
         tbar.update(self.state.step)
         train_loss = math.nan
 
-        with iter(self.train_dataset) as train_iter:
+        with self.train_dataset.iter(self.train_iter_state_dict) as train_iter:
             if self.state.next_batch is None:
                 logger.info("Preparing the first batch")
                 self.state.next_batch = next(train_iter)
@@ -213,9 +241,11 @@ class Trainer:
                         f"[ tokens {trained_tokens:.3e} | loss {train_loss:.3f} ]"
                     )
                     tbar.update()
-                    wandb.log(log_dict)
+                    wandb.log(log_dict, step=self.state.step)
 
                 self.state.step += 1
+
+            self.train_iter_state_dict = train_iter.state_dict()
 
         self.save_hf()
 

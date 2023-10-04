@@ -1,3 +1,4 @@
+load_dir: null
 save_dir: ./out/gpt2_testrun
 wandb_url: https://stability.wandb.io
 wandb_entity: null

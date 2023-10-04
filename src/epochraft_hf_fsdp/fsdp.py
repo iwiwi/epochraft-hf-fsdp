@@ -17,6 +17,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import FullStateDictConfig  # type: ignore
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # type: ignore
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType  # type: ignore
+from torch.distributed.fsdp.api import FullOptimStateDictConfig
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 
@@ -106,6 +107,20 @@ def get_model_state_dict(model: FSDP) -> dict[str, torch.Tensor]:
     return state_dict
 
 
+def get_optimizer_state_dict(
+    model: FSDP, optimizer: torch.optim.Optimizer
+) -> dict[str, torch.Tensor]:
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        None,
+        FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        state_dict = FSDP.optim_state_dict(model, optimizer)
+
+    return state_dict
+
+
 def save_model_state_dict(model: FSDP, path: Path) -> None:
     # TODO: explore SHARDED_STATE_DICT for efficiency
     state_dict = get_model_state_dict(model)
@@ -115,7 +130,18 @@ def save_model_state_dict(model: FSDP, path: Path) -> None:
 
 def save_optimizer_state_dict(model: FSDP, optimizer: torch.optim.Optimizer, path: Path) -> None:
     # TODO: explore SHARDED_STATE_DICT for efficiency
-
-    state_dict = FSDP.full_optim_state_dict(model, optimizer)
+    state_dict = get_optimizer_state_dict(model, optimizer)
     if get_rank() == 0:
         torch.save(state_dict, path)
+
+
+def load_optimizer_state_dict(model: FSDP, optimizer: torch.optim.Optimizer, path: Path) -> None:
+    state_dict = torch.load(path, map_location="cpu")
+    with FSDP.state_dict_type(
+        model,
+        StateDictType.FULL_STATE_DICT,
+        None,
+        FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True),
+    ):
+        state_dict = FSDP.optim_state_dict_to_load(state_dict, model, optimizer)
+        optimizer.load_state_dict(state_dict)
