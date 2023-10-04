@@ -1,4 +1,4 @@
-out_dir: ./out/gpt2_testrun
+save_dir: ./out/gpt2_testrun
 wandb_url: https://stability.wandb.io
 wandb_entity: null
 wandb_project: epochraft-hf-fsdp

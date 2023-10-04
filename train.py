@@ -25,7 +25,8 @@ logger = getLogger(__name__)
 
 @dataclass
 class Config:
-    out_dir: Path
+    save_dir: Path
+
     wandb_url: Optional[str]
     wandb_entity: Optional[str]
     wandb_project: str
@@ -148,7 +149,7 @@ class Trainer:
 
     def save_checkpoint(self, train_iter: CheckpointableIterator) -> None:
         rank = fsdp.get_rank()
-        path = self.config.out_dir / f"ckpt/step_{self.state.step:07d}/"
+        path = self.config.save_dir / f"ckpt/step_{self.state.step:07d}/"
         path.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Saving checkpoint to: {path}")
@@ -280,7 +281,7 @@ class Trainer:
         state_dict = fsdp.get_model_state_dict(self.model)
 
         if fsdp.get_rank() == 0:
-            out_path = self.config.out_dir / "hf"
+            out_path = self.config.save_dir / "hf"
             out_path.mkdir(parents=True, exist_ok=True)
 
             hf_model = AutoModelForCausalLM.from_pretrained(
@@ -303,7 +304,7 @@ def main() -> None:
 
     config = Config.from_cli()
     fsdp.init_process_group()
-    utils.setup_logger(config.out_dir)
+    utils.setup_logger(config.save_dir)
     logger.info(f"World={world_size}, Rank={rank}, Local rank={local_rank}")
     device = f"cuda:{local_rank}"
     torch.cuda.set_device(device)
@@ -320,7 +321,7 @@ def main() -> None:
             entity=config.wandb_entity,
             project=config.wandb_project,
             name=config.wandb_name,
-            dir=config.out_dir,
+            dir=config.save_dir,
             config=wandb_config_dump,
         )
 
