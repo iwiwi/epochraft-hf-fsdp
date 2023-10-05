@@ -27,7 +27,7 @@ classifiers = [
 ]
 requires-python = ">=3.8"
 dependencies = [
-  "torch",
+  "torch >= 2.1.0",
   "transformers",
   "epochraft",
   "colorlog",
@@ -92,6 +92,6 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_unreachable = true
 disallow_any_generics = false
-exclude = ".venv|venv|build|docs|tutorial|tmp"
+exclude = ".venv|venv|build|docs|tutorial|tmp|out"
 disallow_untyped_decorators = false
 disallow_untyped_calls = false

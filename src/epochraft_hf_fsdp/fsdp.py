@@ -141,7 +141,7 @@ def load_optimizer_state_dict(model: FSDP, optimizer: torch.optim.Optimizer, pat
         model,
         StateDictType.FULL_STATE_DICT,
         None,
-        FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True),
+        FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=False),
     ):
-        state_dict = FSDP.optim_state_dict_to_load(state_dict, model, optimizer)
+        state_dict = FSDP.optim_state_dict_to_load(model, optimizer, state_dict)
         optimizer.load_state_dict(state_dict)

@@ -171,10 +171,6 @@ class Trainer:
         else:
             self.state = TrainerState(step=0, next_batch=None)
 
-    def load_checkpoint(self, path: Path) -> None:
-        # TODO: implement this when necessary
-        pass
-
     def save_checkpoint(self, train_iter: CheckpointableIterator) -> None:
         rank = fsdp.get_rank()
         path = self.config.save_dir / f"ckpt/step_{self.state.step:07d}/"
