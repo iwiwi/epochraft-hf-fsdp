@@ -5,16 +5,17 @@ import math
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Sequence, Union
 
 import torch
 import wandb
-from epochraft import CheckpointableIterator, Sample
-from epochraft_hf_fsdp import data, fsdp, logging, lr_schedulers
+from epochraft import CheckpointableDataset, CheckpointableIterator, Sample
+from epochraft_hf_fsdp import fsdp, lr_schedulers
 from omegaconf import OmegaConf
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # type: ignore
 from torch.distributed.fsdp import ShardingStrategy  # type: ignore
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 
 LogValue = Union[float, torch.Tensor]
@@ -28,13 +29,7 @@ class TrainerConfig:
     load_dir: Optional[Path]  # Path to a checkpoint directory
     save_dir: Path
 
-    wandb_url: Optional[str]
-    wandb_entity: Optional[str]
-    wandb_project: str
-    wandb_name: str
-
     model: str
-    tokenizer: str
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
 
@@ -54,10 +49,6 @@ class TrainerConfig:
     beta2: float
     eps: float
 
-    train_dataset: list[data.DataSource]
-    val_dataset: list[data.DataSource]
-
-    val_samples: int
     val_steps: int
 
     ckpt_steps: int
@@ -85,14 +76,43 @@ class TrainerState:
 
 
 class Trainer:
-    def __init__(self, config: TrainerConfig) -> None:
+    def __init__(
+        self,
+        config: TrainerConfig,
+        model: FSDP,
+        optimizer: torch.optim.Optimizer,
+        lr_scheduler: lr_schedulers.CosineScheduler,
+        tokenizer: AutoTokenizer,
+        train_dataset: CheckpointableDataset,
+        val_datasets: Sequence[tuple[str, CheckpointableDataset]],
+        state: TrainerState,
+        train_iter_state_dict: Optional[torch.Tensor] = None,
+    ) -> None:
+        self.config = config
+        self.model = model
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.tokenizer = tokenizer
+        self.train_dataset = train_dataset
+        self.val_datasets = val_datasets
+        self.state = state
+        self.train_iter_state_dict = train_iter_state_dict
+
         world_size = fsdp.get_world_size()
+        assert config.global_batch_size % (config.micro_batch_size * world_size) == 0
+        self.grad_acc_steps = config.global_batch_size // config.micro_batch_size // world_size
+
+    @classmethod
+    def from_config(
+        cls,
+        config: TrainerConfig,
+        tokenizer: PreTrainedTokenizerBase,
+        train_dataset: CheckpointableDataset,
+        val_datasets: Sequence[tuple[str, CheckpointableDataset]],
+    ) -> Trainer:
         rank = fsdp.get_rank()
 
-        self.config = config
-
         # Model
-        self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
         model = AutoModelForCausalLM.from_pretrained(
             config.model, torch_dtype=torch.bfloat16, trust_remote_code=True
         )
@@ -108,17 +128,16 @@ class Trainer:
 
         model = fsdp.setup_fsdp(model, config.fsdp_sharding_strategy, layer_cls)
         fsdp.apply_fsdp_checkpointing(model, layer_cls)
-        self.model = model
 
         # Optimization
-        self.optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=0.0,
             weight_decay=config.weight_decay,
             betas=(config.beta1, config.beta2),
             eps=config.eps,
         )
-        self.lr_scheduler = lr_schedulers.CosineScheduler(
+        lr_scheduler = lr_schedulers.CosineScheduler(
             config.max_lr,
             config.min_lr,
             config.steps,
@@ -126,48 +145,41 @@ class Trainer:
             config.linear_warmup_steps,
             config.cooldown_steps,
         )
-        assert config.global_batch_size % (config.micro_batch_size * world_size) == 0
-        self.grad_acc_steps = config.global_batch_size // config.micro_batch_size // world_size
 
         if config.load_dir:
             ckpt_path = config.load_dir / "optimizer.pth"
             logger.info(f"Loading optimizer state_dict from: {ckpt_path}")
-            fsdp.load_optimizer_state_dict(self.model, self.optimizer, ckpt_path)
+            fsdp.load_optimizer_state_dict(model, optimizer, ckpt_path)
 
         # Datasets
-        self.train_dataset = data.construct_training_dataset(
-            config.train_dataset,
-            self.tokenizer,
-            config.seq_len,
-            rank,
-            world_size,
-            config.micro_batch_size,
-        )
-        self.val_datasets = data.construct_val_dataset(
-            config.val_dataset,
-            self.tokenizer,
-            config.seq_len,
-            rank,
-            world_size,
-            config.micro_batch_size,
-            config.val_samples,
-        )
         if config.load_dir:
             rank = fsdp.get_rank()
             ckpt_path = config.load_dir / f"train_iter_rank{rank:04d}.pth"
             logger.info("Loading train_iter state_dict from: {ckpt_path}")
-            self.train_iter_state_dict = torch.load(ckpt_path)
+            train_iter_state_dict = torch.load(ckpt_path)
         else:
-            self.train_iter_state_dict = None
+            train_iter_state_dict = None
 
         # State
         if config.load_dir:
             ckpt_path = config.load_dir / "trainer.pth"
             logger.info(f"Loading trainer state from: {ckpt_path}")
             state_dict = torch.load(ckpt_path)
-            self.state: TrainerState = state_dict
+            state: TrainerState = state_dict
         else:
-            self.state = TrainerState(step=0, next_batch=None)
+            state = TrainerState(step=0, next_batch=None)
+
+        return cls(
+            config=config,
+            model=model,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            tokenizer=tokenizer,
+            train_dataset=train_dataset,
+            val_datasets=val_datasets,
+            state=state,
+            train_iter_state_dict=train_iter_state_dict,
+        )
 
     def save_checkpoint(self, train_iter: CheckpointableIterator) -> None:
         rank = fsdp.get_rank()

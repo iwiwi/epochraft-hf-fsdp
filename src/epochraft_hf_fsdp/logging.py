@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-import math
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -58,19 +58,30 @@ def setup_logger(out_dir: Optional[Path]) -> None:
     logger.info(f"World={get_world_size()}, Rank={rank}, Local rank={get_local_rank()}")
 
 
+@dataclass
+class WandbConfig:
+    url: Optional[str]
+    entity: Optional[str]
+    project: str
+    name: str
+
+
 def setup_wandb(
-    url: Optional[str],
-    entity: Optional[str],
-    project: str,
-    name: str,
+    wandb_config: WandbConfig,
     save_dir: Path,
-    config: dict[str, Any],
+    dump: dict[str, Any],
 ) -> bool:
     rank = dist.get_rank()
     if rank == 0:
-        config["world_size"] = get_world_size()
-        wandb.login(host=url)
-        wandb.init(entity=entity, project=project, name=name, dir=save_dir, config=config)
+        dump["world_size"] = get_world_size()
+        wandb.login(host=wandb_config.url)
+        wandb.init(
+            entity=wandb_config.entity,
+            project=wandb_config.project,
+            name=wandb_config.name,
+            dir=save_dir,
+            config=dump,
+        )
         return True
     else:
         return False

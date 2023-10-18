@@ -1,33 +1,37 @@
-load_dir: null
-save_dir: ./out/gpt2_testrun
-wandb_url: https://stability.wandb.io
-wandb_entity: null
-wandb_project: epochraft-hf-fsdp
-wandb_name: gpt2_testrun.yaml
+wandb:
+  url: https://stability.wandb.io
+  entity: null
+  project: epochraft-hf-fsdp
+  name: gpt2_testrun
 
-model: gpt2
-tokenizer: gpt2
-transformer_blocks_path: transformer.h
-fsdp_sharding_strategy: SHARD_GRAD_OP
+trainer:
+  load_dir: null
+  save_dir: ./out/gpt2_testrun
 
-seq_len: 1024
-global_batch_size: 64
-micro_batch_size: 8
-steps: 100
+  model: gpt2
+  transformer_blocks_path: transformer.h
+  fsdp_sharding_strategy: SHARD_GRAD_OP
 
-ckpt_steps: 50
-val_steps: 20
+  seq_len: 1024
+  global_batch_size: 64
+  micro_batch_size: 8
+  steps: 100
 
-zerolr_warmup_steps: 5
-linear_warmup_steps: 10
-cooldown_steps: 10
-max_lr: 0.0001
-min_lr: 0.00001
-weight_decay: 0.1
-grad_clip: 1.0
-beta1: 0.9
-beta2: 0.95
-eps: 0.000001
+  ckpt_steps: 50
+  val_steps: 20
+
+  zerolr_warmup_steps: 5
+  linear_warmup_steps: 10
+  cooldown_steps: 10
+  max_lr: 0.0001
+  min_lr: 0.00001
+  weight_decay: 0.1
+  grad_clip: 1.0
+  beta1: 0.9
+  beta2: 0.95
+  eps: 0.000001
+
+tokenizer: null
 
 val_samples: 64
 val_dataset:
