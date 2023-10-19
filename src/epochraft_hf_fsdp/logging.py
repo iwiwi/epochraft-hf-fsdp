@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -38,6 +39,7 @@ def setup_file_logger(out_dir: Path) -> None:
 
 def setup_logger(out_dir: Optional[Path]) -> None:
     rank = get_rank()
+    hostname = socket.gethostname()
 
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.DEBUG)
@@ -55,7 +57,10 @@ def setup_logger(out_dir: Optional[Path]) -> None:
         setup_file_logger(out_dir)
 
     logger.info("Save dir: {}".format(out_dir))
-    logger.info(f"World={get_world_size()}, Rank={rank}, Local rank={get_local_rank()}")
+    logger.info(
+        f"World={get_world_size()}, Rank={rank}, "
+        f"Local rank={get_local_rank()}, Hostname={hostname}"
+    )
 
 
 @dataclass

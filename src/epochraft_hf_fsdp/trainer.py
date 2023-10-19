@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import argparse
 import math
+import time
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
@@ -11,17 +11,21 @@ import torch
 import wandb
 from epochraft import CheckpointableDataset, CheckpointableIterator, Sample
 from epochraft_hf_fsdp import fsdp, lr_schedulers
-from omegaconf import OmegaConf
+from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # type: ignore
 from torch.distributed.fsdp import ShardingStrategy  # type: ignore
 from tqdm.auto import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 
-LogValue = Union[float, torch.Tensor]
+LogValue = Union[float, torch.Tensor, None]
 LogDict = Dict[str, LogValue]
 
 logger = getLogger(__name__)
+
+
+def get_num_params(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
 @dataclass
@@ -53,20 +57,6 @@ class TrainerConfig:
 
     ckpt_steps: int
 
-    @staticmethod
-    def from_cli() -> TrainerConfig:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("config_path", type=str, nargs="+")
-        parser.add_argument("-m", "--modify", type=str, nargs="*")
-        args = parser.parse_args()
-
-        config = OmegaConf.merge(
-            OmegaConf.structured(TrainerConfig),
-            *[OmegaConf.load(path) for path in args.config_path],
-            OmegaConf.from_cli(args.modify or []),
-        )
-        return OmegaConf.to_object(config)  # type: ignore
-
 
 # This is the state that is saved to the checkpoint in addition to the model and optimizer states.
 @dataclass
@@ -80,6 +70,7 @@ class Trainer:
         self,
         config: TrainerConfig,
         model: FSDP,
+        num_params: int,
         optimizer: torch.optim.Optimizer,
         lr_scheduler: lr_schedulers.CosineScheduler,
         tokenizer: AutoTokenizer,
@@ -90,6 +81,7 @@ class Trainer:
     ) -> None:
         self.config = config
         self.model = model
+        self.num_params = num_params
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
         self.tokenizer = tokenizer
@@ -101,6 +93,8 @@ class Trainer:
         world_size = fsdp.get_world_size()
         assert config.global_batch_size % (config.micro_batch_size * world_size) == 0
         self.grad_acc_steps = config.global_batch_size // config.micro_batch_size // world_size
+
+        self.last_iter_completion_time: Optional[float] = None  # To measure iteration times
 
     @classmethod
     def from_config(
@@ -116,8 +110,9 @@ class Trainer:
         model = AutoModelForCausalLM.from_pretrained(
             config.model, torch_dtype=torch.bfloat16, trust_remote_code=True
         )
+        num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
-        logger.info(f"Model class: {type(model)}, block class: {layer_cls}")
+        logger.info(f"Model class: {type(model)}, block class: {layer_cls}, params: {num_params}")
 
         if config.load_dir:
             ckpt_path = config.load_dir / "model.pth"
@@ -172,6 +167,7 @@ class Trainer:
         return cls(
             config=config,
             model=model,
+            num_params=num_params,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
             tokenizer=tokenizer,
@@ -199,14 +195,6 @@ class Trainer:
 
     def train(self) -> None:
         rank = fsdp.get_rank()
-        tbar = tqdm(
-            total=self.config.steps,
-            disable=rank != 0,
-            position=0,
-            leave=True,
-        )
-        tbar.update(self.state.step)
-        train_loss = math.nan
 
         with self.train_dataset.iter(self.train_iter_state_dict) as train_iter:
             if self.state.next_batch is None:
@@ -216,6 +204,16 @@ class Trainer:
             logger.info("Waiting for other ranks")
             torch.distributed.barrier()
             logger.info("Training start")
+            self.last_iter_completion_time = None
+
+            tbar = tqdm(
+                total=self.config.steps,
+                disable=rank != 0,
+                position=0,
+                leave=True,
+            )
+            tbar.update(self.state.step)
+            train_loss = math.nan
 
             while self.state.step <= self.config.steps:
                 # To be logged to wandb
@@ -231,20 +229,25 @@ class Trainer:
                 if self.state.step % self.config.val_steps == 0:
                     scores = self.validate()
                     log_dict.update({f"val/{key}": value for key, value in scores.items()})
+                    self.last_iter_completion_time = None  # Validation breaks iteration times
 
                 # Checkpointing
                 if self.state.step % self.config.ckpt_steps == 0 and self.state.step > 0:
                     self.save_checkpoint(train_iter)
+                    self.last_iter_completion_time = None  # Checkpointing breaks iteration times
 
                 # Training
                 if self.state.step < self.config.steps:
                     log_dict.update(self.train_step(train_iter))
-                    train_loss = float(log_dict["train/loss"])
+                    train_loss = float(log_dict["train/loss"] or 0.0)
 
                 # Logging
                 if rank == 0:
+                    flops_per_sec = log_dict.get("train/flops_per_sec", None) or 0.0
+                    tflops_per_sec = flops_per_sec / 1e12
                     tbar.set_description(
-                        f"[ tokens {trained_tokens:.3e} | loss {train_loss:.3f} ]"
+                        f"[ tokens={trained_tokens:.3e} | loss={train_loss:.3f} | "
+                        f"tflops={tflops_per_sec:.1f} ]"
                     )
                     tbar.update()
                     wandb.log(log_dict, step=self.state.step)
@@ -282,9 +285,28 @@ class Trainer:
         torch.distributed.all_reduce(loss_sum, torch.distributed.ReduceOp.SUM)
         loss_avg = loss_sum / self.config.global_batch_size
 
+        # FLOPs
+        time_now = time.time()
+        if self.last_iter_completion_time is not None:
+            sec_per_iter = time_now - self.last_iter_completion_time
+            flops_per_iter = (
+                6
+                * self.config.micro_batch_size
+                * self.grad_acc_steps
+                * self.config.seq_len
+                * self.num_params
+            )
+            flops_per_sec = flops_per_iter / sec_per_iter
+        else:
+            sec_per_iter = None
+            flops_per_sec = None
+        self.last_iter_completion_time = time_now
+
         return {
             "train/lr": lr,
             "train/loss": loss_avg,
+            "train/sec_per_iter": sec_per_iter,
+            "train/flops_per_sec": flops_per_sec,
         }
 
     @torch.no_grad()
