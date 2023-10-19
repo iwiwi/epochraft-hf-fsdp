@@ -1,40 +1,39 @@
 from __future__ import annotations
 
-import argparse
 import math
+import time
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Sequence, Union
 
 import torch
 import wandb
-from epochraft import CheckpointableIterator, Sample
-from epochraft_hf_fsdp import data, fsdp, utils
-from omegaconf import OmegaConf
+from epochraft import CheckpointableDataset, CheckpointableIterator, Sample
+from epochraft_hf_fsdp import fsdp, lr_schedulers
+from torch import nn
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # type: ignore
 from torch.distributed.fsdp import ShardingStrategy  # type: ignore
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 
-LogValue = Union[float, torch.Tensor]
+LogValue = Union[float, torch.Tensor, None]
 LogDict = Dict[str, LogValue]
 
 logger = getLogger(__name__)
 
 
+def get_num_params(model: nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
 @dataclass
-class Config:
+class TrainerConfig:
     load_dir: Optional[Path]  # Path to a checkpoint directory
     save_dir: Path
 
-    wandb_url: Optional[str]
-    wandb_entity: Optional[str]
-    wandb_project: str
-    wandb_name: str
-
     model: str
-    tokenizer: str
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
 
@@ -54,29 +53,9 @@ class Config:
     beta2: float
     eps: float
 
-    train_dataset: list[data.DataSource]
-    val_dataset: list[data.DataSource]
-
-    val_samples: int
     val_steps: int
 
     ckpt_steps: int
-
-    @staticmethod
-    def from_cli() -> Config:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("config_path", type=str, nargs="+")
-        parser.add_argument("-m", "--modify", type=str, nargs="*")
-        args = parser.parse_args()
-
-        config = OmegaConf.merge(
-            OmegaConf.structured(Config),
-            *[OmegaConf.load(path) for path in args.config_path],
-            OmegaConf.from_cli(args.modify or []),
-        )
-        OmegaConf.set_readonly(config, True)
-
-        return config  # type: ignore
 
 
 # This is the state that is saved to the checkpoint in addition to the model and optimizer states.
@@ -87,19 +66,53 @@ class TrainerState:
 
 
 class Trainer:
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self,
+        config: TrainerConfig,
+        model: FSDP,
+        num_params: int,
+        optimizer: torch.optim.Optimizer,
+        lr_scheduler: lr_schedulers.CosineScheduler,
+        tokenizer: AutoTokenizer,
+        train_dataset: CheckpointableDataset,
+        val_datasets: Sequence[tuple[str, CheckpointableDataset]],
+        state: TrainerState,
+        train_iter_state_dict: Optional[torch.Tensor] = None,
+    ) -> None:
+        self.config = config
+        self.model = model
+        self.num_params = num_params
+        self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.tokenizer = tokenizer
+        self.train_dataset = train_dataset
+        self.val_datasets = val_datasets
+        self.state = state
+        self.train_iter_state_dict = train_iter_state_dict
+
         world_size = fsdp.get_world_size()
+        assert config.global_batch_size % (config.micro_batch_size * world_size) == 0
+        self.grad_acc_steps = config.global_batch_size // config.micro_batch_size // world_size
+
+        self.last_iter_completion_time: Optional[float] = None  # To measure iteration times
+
+    @classmethod
+    def from_config(
+        cls,
+        config: TrainerConfig,
+        tokenizer: PreTrainedTokenizerBase,
+        train_dataset: CheckpointableDataset,
+        val_datasets: Sequence[tuple[str, CheckpointableDataset]],
+    ) -> Trainer:
         rank = fsdp.get_rank()
 
-        self.config = config
-
         # Model
-        self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer)
         model = AutoModelForCausalLM.from_pretrained(
             config.model, torch_dtype=torch.bfloat16, trust_remote_code=True
         )
+        num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
-        logger.info(f"Model class: {type(model)}, block class: {layer_cls}")
+        logger.info(f"Model class: {type(model)}, block class: {layer_cls}, params: {num_params}")
 
         if config.load_dir:
             ckpt_path = config.load_dir / "model.pth"
@@ -110,17 +123,16 @@ class Trainer:
 
         model = fsdp.setup_fsdp(model, config.fsdp_sharding_strategy, layer_cls)
         fsdp.apply_fsdp_checkpointing(model, layer_cls)
-        self.model = model
 
         # Optimization
-        self.optimizer = torch.optim.AdamW(
+        optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=0.0,
             weight_decay=config.weight_decay,
             betas=(config.beta1, config.beta2),
             eps=config.eps,
         )
-        self.lr_scheduler = utils.CosineScheduler(
+        lr_scheduler = lr_schedulers.CosineScheduler(
             config.max_lr,
             config.min_lr,
             config.steps,
@@ -128,48 +140,42 @@ class Trainer:
             config.linear_warmup_steps,
             config.cooldown_steps,
         )
-        assert config.global_batch_size % (config.micro_batch_size * world_size) == 0
-        self.grad_acc_steps = config.global_batch_size // config.micro_batch_size // world_size
 
         if config.load_dir:
             ckpt_path = config.load_dir / "optimizer.pth"
             logger.info(f"Loading optimizer state_dict from: {ckpt_path}")
-            fsdp.load_optimizer_state_dict(self.model, self.optimizer, ckpt_path)
+            fsdp.load_optimizer_state_dict(model, optimizer, ckpt_path)
 
         # Datasets
-        self.train_dataset = data.construct_training_dataset(
-            config.train_dataset,
-            self.tokenizer,
-            config.seq_len,
-            rank,
-            world_size,
-            config.micro_batch_size,
-        )
-        self.val_datasets = data.construct_val_dataset(
-            config.val_dataset,
-            self.tokenizer,
-            config.seq_len,
-            rank,
-            world_size,
-            config.micro_batch_size,
-            config.val_samples,
-        )
         if config.load_dir:
             rank = fsdp.get_rank()
             ckpt_path = config.load_dir / f"train_iter_rank{rank:04d}.pth"
             logger.info("Loading train_iter state_dict from: {ckpt_path}")
-            self.train_iter_state_dict = torch.load(ckpt_path)
+            train_iter_state_dict = torch.load(ckpt_path)
         else:
-            self.train_iter_state_dict = None
+            train_iter_state_dict = None
 
         # State
         if config.load_dir:
             ckpt_path = config.load_dir / "trainer.pth"
             logger.info(f"Loading trainer state from: {ckpt_path}")
             state_dict = torch.load(ckpt_path)
-            self.state: TrainerState = state_dict
+            state: TrainerState = state_dict
         else:
-            self.state = TrainerState(step=0, next_batch=None)
+            state = TrainerState(step=0, next_batch=None)
+
+        return cls(
+            config=config,
+            model=model,
+            num_params=num_params,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            tokenizer=tokenizer,
+            train_dataset=train_dataset,
+            val_datasets=val_datasets,
+            state=state,
+            train_iter_state_dict=train_iter_state_dict,
+        )
 
     def save_checkpoint(self, train_iter: CheckpointableIterator) -> None:
         rank = fsdp.get_rank()
@@ -189,14 +195,6 @@ class Trainer:
 
     def train(self) -> None:
         rank = fsdp.get_rank()
-        tbar = tqdm(
-            total=self.config.steps,
-            disable=rank != 0,
-            position=0,
-            leave=True,
-        )
-        tbar.update(self.state.step)
-        train_loss = math.nan
 
         with self.train_dataset.iter(self.train_iter_state_dict) as train_iter:
             if self.state.next_batch is None:
@@ -206,6 +204,16 @@ class Trainer:
             logger.info("Waiting for other ranks")
             torch.distributed.barrier()
             logger.info("Training start")
+            self.last_iter_completion_time = None
+
+            tbar = tqdm(
+                total=self.config.steps,
+                disable=rank != 0,
+                position=0,
+                leave=True,
+            )
+            tbar.update(self.state.step)
+            train_loss = math.nan
 
             while self.state.step <= self.config.steps:
                 # To be logged to wandb
@@ -221,20 +229,25 @@ class Trainer:
                 if self.state.step % self.config.val_steps == 0:
                     scores = self.validate()
                     log_dict.update({f"val/{key}": value for key, value in scores.items()})
+                    self.last_iter_completion_time = None  # Validation breaks iteration times
 
                 # Checkpointing
                 if self.state.step % self.config.ckpt_steps == 0 and self.state.step > 0:
                     self.save_checkpoint(train_iter)
+                    self.last_iter_completion_time = None  # Checkpointing breaks iteration times
 
                 # Training
                 if self.state.step < self.config.steps:
                     log_dict.update(self.train_step(train_iter))
-                    train_loss = float(log_dict["train/loss"])
+                    train_loss = float(log_dict["train/loss"] or 0.0)
 
                 # Logging
                 if rank == 0:
+                    flops_per_sec = log_dict.get("train/flops_per_sec", None) or 0.0
+                    tflops_per_sec = flops_per_sec / 1e12
                     tbar.set_description(
-                        f"[ tokens {trained_tokens:.3e} | loss {train_loss:.3f} ]"
+                        f"[ tokens={trained_tokens:.3e} | loss={train_loss:.3f} | "
+                        f"tflops={tflops_per_sec:.1f} ]"
                     )
                     tbar.update()
                     wandb.log(log_dict, step=self.state.step)
@@ -272,9 +285,28 @@ class Trainer:
         torch.distributed.all_reduce(loss_sum, torch.distributed.ReduceOp.SUM)
         loss_avg = loss_sum / self.config.global_batch_size
 
+        # FLOPs
+        time_now = time.time()
+        if self.last_iter_completion_time is not None:
+            sec_per_iter = time_now - self.last_iter_completion_time
+            flops_per_iter = (
+                6
+                * self.config.micro_batch_size
+                * self.grad_acc_steps
+                * self.config.seq_len
+                * self.num_params
+            )
+            flops_per_sec = flops_per_iter / sec_per_iter
+        else:
+            sec_per_iter = None
+            flops_per_sec = None
+        self.last_iter_completion_time = time_now
+
         return {
             "train/lr": lr,
             "train/loss": loss_avg,
+            "train/sec_per_iter": sec_per_iter,
+            "train/flops_per_sec": flops_per_sec,
         }
 
     @torch.no_grad()
@@ -320,40 +352,3 @@ class Trainer:
 
         torch.distributed.barrier()
         logger.info("Saved HF model")
-
-
-def main() -> None:
-    world_size = fsdp.get_world_size()
-    rank = fsdp.get_rank()
-    local_rank = fsdp.get_local_rank()
-    print(f"World={world_size} Rank={rank}, Local rank={local_rank}", flush=True)
-
-    config = Config.from_cli()
-    fsdp.init_process_group()
-    utils.setup_logger(config.save_dir)
-    logger.info(f"World={world_size}, Rank={rank}, Local rank={local_rank}")
-    device = f"cuda:{local_rank}"
-    torch.cuda.set_device(device)
-
-    # Wandb
-    if rank == 0:
-        wandb_config_dump = {
-            "world_size": world_size,
-            **OmegaConf.to_container(config, resolve=True),  # type: ignore
-        }
-
-        wandb.login(host=config.wandb_url)
-        wandb.init(
-            entity=config.wandb_entity,
-            project=config.wandb_project,
-            name=config.wandb_name,
-            dir=config.save_dir,
-            config=wandb_config_dump,
-        )
-
-    trainer = Trainer(config)
-    trainer.train()
-
-
-if __name__ == "__main__":
-    main()

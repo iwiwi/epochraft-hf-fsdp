@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import os
+import socket
 import tempfile
 from functools import partial
 from pathlib import Path
@@ -34,6 +35,14 @@ def get_world_size() -> int:
 
 
 def init_process_group() -> None:
+    world_size = get_world_size()
+    rank = get_rank()
+    local_rank = get_local_rank()
+    hostname = socket.gethostname()
+    print(
+        f"World={world_size} Rank={rank}, Local rank={local_rank}, Hostname={hostname}", flush=True
+    )
+
     if os.environ.get("WORLD_SIZE", None):
         torch.distributed.init_process_group(rank=get_rank(), world_size=get_world_size())
     else:
@@ -41,6 +50,9 @@ def init_process_group() -> None:
         torch.distributed.init_process_group(
             init_method=f"file://{temp_file.name}", rank=0, world_size=1
         )
+
+    device = f"cuda:{local_rank}"
+    torch.cuda.set_device(device)
 
 
 def get_transformer_block_class(
