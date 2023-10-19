@@ -36,6 +36,7 @@ class TrainerConfig:
     model: str
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
+    fsdp_cpu_offload: bool
 
     seq_len: int
     global_batch_size: int
@@ -121,7 +122,9 @@ class Trainer:
             model.load_state_dict(state_dict)
             del state_dict
 
-        model = fsdp.setup_fsdp(model, config.fsdp_sharding_strategy, layer_cls)
+        model = fsdp.setup_fsdp(
+            model, config.fsdp_sharding_strategy, layer_cls, cpu_offload=config.fsdp_cpu_offload
+        )
         fsdp.apply_fsdp_checkpointing(model, layer_cls)
 
         # Optimization
