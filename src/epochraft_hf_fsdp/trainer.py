@@ -225,16 +225,16 @@ class Trainer:
                     "train/tokens": trained_tokens,
                 }
 
+                # Checkpointing
+                if self.state.step % self.config.ckpt_steps == 0 and self.state.step > 0:
+                    self.save_checkpoint(train_iter)
+                    self.last_iter_completion_time = None  # Checkpointing breaks iteration times
+
                 # Validation
                 if self.state.step % self.config.val_steps == 0:
                     scores = self.validate()
                     log_dict.update({f"val/{key}": value for key, value in scores.items()})
                     self.last_iter_completion_time = None  # Validation breaks iteration times
-
-                # Checkpointing
-                if self.state.step % self.config.ckpt_steps == 0 and self.state.step > 0:
-                    self.save_checkpoint(train_iter)
-                    self.last_iter_completion_time = None  # Checkpointing breaks iteration times
 
                 # Training
                 if self.state.step < self.config.steps:
