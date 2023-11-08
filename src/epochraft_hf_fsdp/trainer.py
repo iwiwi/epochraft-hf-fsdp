@@ -108,7 +108,10 @@ class Trainer:
 
         # Model
         model = AutoModelForCausalLM.from_pretrained(
-            config.model, torch_dtype=torch.bfloat16, trust_remote_code=True
+            config.model,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            use_flash_attention_2=True,
         )
         num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
