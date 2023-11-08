@@ -112,6 +112,7 @@ class Trainer:
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
             use_flash_attention_2=True,
+            use_cache=False,
         )
         num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
