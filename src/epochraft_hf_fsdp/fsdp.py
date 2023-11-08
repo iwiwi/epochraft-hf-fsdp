@@ -87,7 +87,6 @@ def setup_fsdp(
             buffer_dtype=torch.bfloat16,
             cast_forward_inputs=True,
         ),
-        forward_prefetch=True,
         limit_all_gathers=True,
     )
 
