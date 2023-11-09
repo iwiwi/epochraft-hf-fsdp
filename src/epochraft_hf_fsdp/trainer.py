@@ -109,7 +109,11 @@ class Trainer:
 
         # Model
         model = AutoModelForCausalLM.from_pretrained(
-            config.model, torch_dtype=torch.bfloat16, trust_remote_code=True
+            config.model,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            use_flash_attention_2=True,
+            use_cache=False,
         )
         num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
@@ -228,16 +232,16 @@ class Trainer:
                     "train/tokens": trained_tokens,
                 }
 
+                # Checkpointing
+                if self.state.step % self.config.ckpt_steps == 0 and self.state.step > 0:
+                    self.save_checkpoint(train_iter)
+                    self.last_iter_completion_time = None  # Checkpointing breaks iteration times
+
                 # Validation
                 if self.state.step % self.config.val_steps == 0:
                     scores = self.validate()
                     log_dict.update({f"val/{key}": value for key, value in scores.items()})
                     self.last_iter_completion_time = None  # Validation breaks iteration times
-
-                # Checkpointing
-                if self.state.step % self.config.ckpt_steps == 0 and self.state.step > 0:
-                    self.save_checkpoint(train_iter)
-                    self.last_iter_completion_time = None  # Checkpointing breaks iteration times
 
                 # Training
                 if self.state.step < self.config.steps:
