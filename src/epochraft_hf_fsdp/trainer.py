@@ -274,7 +274,7 @@ class Trainer:
 
         self.model.train()
 
-        loss_sum = torch.zeros((), dtype=torch.float32, device=device)
+        loss_sum = torch.zeros((), dtype=torch.float32, device=device)  # type: ignore
         for _ in range(self.grad_acc_steps):
             batch = self.state.next_batch
             assert batch
@@ -328,7 +328,7 @@ class Trainer:
         scores = {}
         for dataset_name, dataset in tqdm(self.val_datasets, disable=rank != 0):
             # (sum, cnt)
-            loss_agg = torch.zeros(2, dtype=torch.float32, device=device)
+            loss_agg = torch.zeros(2, dtype=torch.float32, device=device)  # type: ignore
 
             with iter(dataset) as it:
                 for batch in it:
