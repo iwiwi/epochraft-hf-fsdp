@@ -267,16 +267,18 @@ class Trainer:
         self.save_hf()
 
     def train_step(self, train_iter: CheckpointableIterator) -> LogDict:
+        device = fsdp.get_local_rank()
         lr = self.lr_scheduler(self.state.step)
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
         self.model.train()
-        loss_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
+
+        loss_sum = torch.zeros((), dtype=torch.float32, device=device)
         for _ in range(self.grad_acc_steps):
             batch = self.state.next_batch
             assert batch
-            input_ids = batch["input_ids"].to(self.model.device)
+            input_ids = batch["input_ids"].to(device)
 
             out = self.model(input_ids=input_ids, labels=input_ids, return_dict=False)
             loss = out[0]
@@ -320,12 +322,13 @@ class Trainer:
     @torch.no_grad()
     def validate(self) -> LogDict:
         rank = fsdp.get_rank()
+        device = fsdp.get_local_rank()
         logger.info("Validation starting")
         self.model.eval()
         scores = {}
         for dataset_name, dataset in tqdm(self.val_datasets, disable=rank != 0):
             # (sum, cnt)
-            loss_agg = torch.zeros(2, dtype=torch.float32, device=self.model.device)
+            loss_agg = torch.zeros(2, dtype=torch.float32, device=device)
 
             with iter(dataset) as it:
                 for batch in it:
