@@ -15,7 +15,7 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
     checkpoint_wrapper,
 )
-from torch.distributed.fsdp import FullStateDictConfig  # type: ignore
+from torch.distributed.fsdp import CPUOffload, FullStateDictConfig  # type: ignore
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # type: ignore
 from torch.distributed.fsdp import MixedPrecision, ShardingStrategy, StateDictType  # type: ignore
 from torch.distributed.fsdp.api import FullOptimStateDictConfig
@@ -70,6 +70,7 @@ def setup_fsdp(
     model: nn.Module,
     sharding_strategy: ShardingStrategy,
     transformer_block_class: Type[nn.Module],
+    cpu_offload: bool,
 ) -> FSDP:
     local_rank = get_local_rank()
 
@@ -88,6 +89,7 @@ def setup_fsdp(
             cast_forward_inputs=True,
         ),
         limit_all_gathers=True,
+        cpu_offload=CPUOffload(offload_params=True) if cpu_offload else None,
     )
 
     return model

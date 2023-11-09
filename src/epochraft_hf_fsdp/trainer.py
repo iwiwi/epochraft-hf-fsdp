@@ -37,6 +37,7 @@ class TrainerConfig:
     model_kwargs: Dict[str, Any]
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
+    fsdp_cpu_offload: bool
 
     seq_len: int
     global_batch_size: int
@@ -126,7 +127,9 @@ class Trainer:
             model.load_state_dict(state_dict)
             del state_dict
 
-        model = fsdp.setup_fsdp(model, config.fsdp_sharding_strategy, layer_cls)
+        model = fsdp.setup_fsdp(
+            model, config.fsdp_sharding_strategy, layer_cls, cpu_offload=config.fsdp_cpu_offload
+        )
         fsdp.apply_fsdp_checkpointing(model, layer_cls)
 
         # Optimization
@@ -264,16 +267,18 @@ class Trainer:
         self.save_hf()
 
     def train_step(self, train_iter: CheckpointableIterator) -> LogDict:
+        device = fsdp.get_local_rank()
         lr = self.lr_scheduler(self.state.step)
         for param_group in self.optimizer.param_groups:
             param_group["lr"] = lr
 
         self.model.train()
-        loss_sum = torch.zeros((), dtype=torch.float32, device=self.model.device)
+
+        loss_sum = torch.zeros((), dtype=torch.float32, device=device)  # type: ignore
         for _ in range(self.grad_acc_steps):
             batch = self.state.next_batch
             assert batch
-            input_ids = batch["input_ids"].to(self.model.device)
+            input_ids = batch["input_ids"].to(device)
 
             out = self.model(input_ids=input_ids, labels=input_ids, return_dict=False)
             loss = out[0]
@@ -317,12 +322,13 @@ class Trainer:
     @torch.no_grad()
     def validate(self) -> LogDict:
         rank = fsdp.get_rank()
+        device = fsdp.get_local_rank()
         logger.info("Validation starting")
         self.model.eval()
         scores = {}
         for dataset_name, dataset in tqdm(self.val_datasets, disable=rank != 0):
             # (sum, cnt)
-            loss_agg = torch.zeros(2, dtype=torch.float32, device=self.model.device)
+            loss_agg = torch.zeros(2, dtype=torch.float32, device=device)  # type: ignore
 
             with iter(dataset) as it:
                 for batch in it:
