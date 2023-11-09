@@ -15,7 +15,7 @@ from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP  # type: ignore
 from torch.distributed.fsdp import ShardingStrategy  # type: ignore
 from tqdm.auto import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 
 LogValue = Union[float, torch.Tensor, None]
@@ -108,14 +108,36 @@ class Trainer:
     ) -> Trainer:
         rank = fsdp.get_rank()
 
-        # Model
-        model = AutoModelForCausalLM.from_pretrained(
-            config.model,
-            torch_dtype=torch.bfloat16,
-            trust_remote_code=True,
-            use_cache=False,
-            **config.model_kwargs,
-        )
+        # To reduce CPU memory usage, we only load the model on rank 0.
+        if rank == 0:
+            model = AutoModelForCausalLM.from_pretrained(
+                config.model,
+                torch_dtype=torch.bfloat16,
+                trust_remote_code=True,
+                use_cache=False,
+                **config.model_kwargs,
+            )
+        else:
+            # TODO: config.model_kwargs should be passed to `from_pretrained` or `from_config` ?
+            model_config = AutoConfig.from_pretrained(config.model, **config.model_kwargs)
+            model_config.torch_dtype = torch.bfloat16
+            model_config.use_cache = False
+
+            with torch.device("meta"):
+                model = AutoModelForCausalLM.from_config(
+                    model_config,
+                    trust_remote_code=True,
+                )
+
+            # with torch.device("meta"):
+            #     model = AutoModelForCausalLM.from_pretrained(
+            #         config.model,
+            #         torch_dtype=torch.bfloat16,
+            #         trust_remote_code=True,
+            #         use_cache=False,
+            #         **config.model_kwargs,
+            #     )
+
         num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
         logger.info(f"Model class: {type(model)}, block class: {layer_cls}, params: {num_params}")
@@ -154,7 +176,7 @@ class Trainer:
             logger.info(f"Loading optimizer state_dict from: {ckpt_path}")
             fsdp.load_optimizer_state_dict(model, optimizer, ckpt_path)
 
-        # Datasets
+        # Datasetsp
         if config.load_dir:
             rank = fsdp.get_rank()
             ckpt_path = config.load_dir / f"train_iter_rank{rank:04d}.pth"
