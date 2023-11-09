@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
-from typing import Dict, Optional, Sequence, Union
+from typing import Any, Dict, Optional, Sequence, Union
 
 import torch
 import wandb
@@ -34,6 +34,7 @@ class TrainerConfig:
     save_dir: Path
 
     model: str
+    model_kwargs: Dict[str, Any]
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
     fsdp_cpu_offload: bool
@@ -112,8 +113,8 @@ class Trainer:
             config.model,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            use_flash_attention_2=True,
             use_cache=False,
+            **config.model_kwargs,
         )
         num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
