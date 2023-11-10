@@ -71,8 +71,14 @@ def setup_fsdp(
     sharding_strategy: ShardingStrategy,
     transformer_block_class: Type[nn.Module],
     cpu_offload: bool,
+    low_cpu_init: bool,
 ) -> FSDP:
+    rank = get_rank()
     local_rank = get_local_rank()
+
+    if low_cpu_init:
+        # For some reason, this seems necessary to avoid an infinite hang in FSDP initialization
+        model.to(torch.bfloat16)
 
     model = FSDP(
         model,
@@ -89,7 +95,15 @@ def setup_fsdp(
             cast_forward_inputs=True,
         ),
         limit_all_gathers=True,
+        # CPU offloading
         cpu_offload=CPUOffload(offload_params=True) if cpu_offload else None,
+        # Low CPU memory initialization
+        sync_module_states=low_cpu_init,
+        param_init_fn=lambda module: module.to_empty(  # type: ignore
+            device=torch.cuda.current_device(), recurse=False  # type: ignore
+        )
+        if low_cpu_init and rank != 0
+        else None,
     )
 
     return model
