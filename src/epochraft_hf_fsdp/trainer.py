@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 from logging import getLogger
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Dict, Optional, Sequence, Union
 
 import torch
 import wandb
