@@ -38,6 +38,7 @@ class TrainerConfig:
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
     fsdp_cpu_offload: bool
+    fsdp_low_cpu_init: bool
 
     seq_len: int
     global_batch_size: int
@@ -108,8 +109,14 @@ class Trainer:
     ) -> Trainer:
         rank = fsdp.get_rank()
 
-        # To reduce CPU memory usage, we only load the model on rank 0.
-        if rank == 0:
+        # Model initialization
+        if config.fsdp_low_cpu_init:
+            logger.info(
+                "Using low CPU memory initialization. This will cause infinite hangs "
+                "depending on model architectures. See: "
+                "https://github.com/iwiwi/epochraft-hf-fsdp/pull/10"
+            )
+        if rank == 0 or not config.fsdp_low_cpu_init:
             model = AutoModelForCausalLM.from_pretrained(
                 config.model,
                 torch_dtype=torch.bfloat16,
@@ -129,15 +136,6 @@ class Trainer:
                     trust_remote_code=True,
                 )
 
-            # with torch.device("meta"):
-            #     model = AutoModelForCausalLM.from_pretrained(
-            #         config.model,
-            #         torch_dtype=torch.bfloat16,
-            #         trust_remote_code=True,
-            #         use_cache=False,
-            #         **config.model_kwargs,
-            #     )
-
         num_params = get_num_params(model)  # Need to do this before FSDP
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
         logger.info(f"Model class: {type(model)}, block class: {layer_cls}, params: {num_params}")
@@ -150,7 +148,11 @@ class Trainer:
             del state_dict
 
         model = fsdp.setup_fsdp(
-            model, config.fsdp_sharding_strategy, layer_cls, cpu_offload=config.fsdp_cpu_offload
+            model,
+            config.fsdp_sharding_strategy,
+            layer_cls,
+            cpu_offload=config.fsdp_cpu_offload,
+            low_cpu_init=config.fsdp_low_cpu_init,
         )
         fsdp.apply_fsdp_checkpointing(model, layer_cls)
 
