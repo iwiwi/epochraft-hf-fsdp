@@ -34,11 +34,12 @@ class TrainerConfig:
     save_dir: Path
 
     model: str
-    model_kwargs: Dict[str, Any]
     transformer_blocks_path: str
     fsdp_sharding_strategy: ShardingStrategy
     fsdp_cpu_offload: bool
     fsdp_low_cpu_init: bool
+    flash_attention_2: bool
+    better_transformer: bool
 
     seq_len: int
     global_batch_size: int
@@ -117,16 +118,32 @@ class Trainer:
                 "https://github.com/iwiwi/epochraft-hf-fsdp/pull/10"
             )
         if rank == 0 or not config.fsdp_low_cpu_init:
+            model_kwargs = {}
+            if config.flash_attention_2:
+                model_kwargs["use_flash_attention_2"] = True
+
             model = AutoModelForCausalLM.from_pretrained(
                 config.model,
                 torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 use_cache=False,
-                **config.model_kwargs,
+                **model_kwargs,
             )
+
+            if config.load_dir:
+                ckpt_path = config.load_dir / "model.pth"
+                logger.info(f"Loading model state_dict from: {ckpt_path}")
+                state_dict = torch.load(ckpt_path, map_location="cpu")
+                model.load_state_dict(state_dict)
+                del state_dict
         else:
-            # TODO: config.model_kwargs should be passed to `from_pretrained` or `from_config` ?
-            model_config = AutoConfig.from_pretrained(config.model, **config.model_kwargs)
+            if config.flash_attention_2:
+                raise ValueError(
+                    "flash_attention_2 is not supported with low CPU memory init. "
+                    "See: https://github.com/iwiwi/epochraft-hf-fsdp/issues/11"
+                )
+
+            model_config = AutoConfig.from_pretrained(config.model)
             model_config.torch_dtype = torch.bfloat16
             model_config.use_cache = False
 
@@ -140,12 +157,11 @@ class Trainer:
         layer_cls = fsdp.get_transformer_block_class(model, config.transformer_blocks_path)
         logger.info(f"Model class: {type(model)}, block class: {layer_cls}, params: {num_params}")
 
-        if config.load_dir:
-            ckpt_path = config.load_dir / "model.pth"
-            logger.info(f"Loading model state_dict from: {ckpt_path}")
-            state_dict = torch.load(ckpt_path, map_location="cpu")
-            model.load_state_dict(state_dict)
-            del state_dict
+        if config.better_transformer:
+            logger.info("Applying BetterTransformer")
+            from optimum.bettertransformer import BetterTransformer
+
+            model = BetterTransformer.transform(model)
 
         model = fsdp.setup_fsdp(
             model,
