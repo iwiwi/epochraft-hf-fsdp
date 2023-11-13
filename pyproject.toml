@@ -28,7 +28,9 @@ classifiers = [
 requires-python = ">=3.8"
 dependencies = [
   "torch >= 2.1.0",
-  "transformers >= 4.34.0",  # use_flash_attention_2
+  # When we use `flash_attention_2`, we need transformers >= 4.34.0.
+  # When we use `better_transformer`, we need transformers <= 4.33.2.
+  "transformers",
   "epochraft",
   "colorlog",
   "tqdm",
