@@ -319,8 +319,9 @@ class Trainer:
             batch = self.state.next_batch
             assert batch
             input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
 
-            out = self.model(input_ids=input_ids, labels=input_ids, return_dict=False)
+            out = self.model(input_ids=input_ids, labels=labels, return_dict=False)
             loss = out[0]
             loss_sum += loss.detach()
             loss.backward()

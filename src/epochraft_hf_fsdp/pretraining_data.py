@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from logging import getLogger
 from typing import Any, Optional, Union
 
-from epochraft import CheckpointableDataset, braceexpand, interleave_datasets
+from epochraft import CheckpointableDataset, Sample, braceexpand, interleave_datasets
 from joblib import Memory
 from transformers import PreTrainedTokenizerBase
 
@@ -156,6 +156,12 @@ def construct_dataset_from_source(
 
     if shuffle:
         dataset = dataset.shuffle(100)
+
+    def _add_labels(sample: Sample) -> Sample:
+        sample["labels"] = sample["input_ids"]
+        return sample
+
+    dataset = dataset.map(_add_labels)
 
     return dataset
 
