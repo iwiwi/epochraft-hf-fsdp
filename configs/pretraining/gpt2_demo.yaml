@@ -2,15 +2,19 @@ wandb:
   url: https://stability.wandb.io
   entity: null
   project: epochraft-hf-fsdp
-  name: gpt2_testrun
+  name: gpt2_demo
 
 trainer:
   load_dir: null
-  save_dir: ./out/gpt2_testrun
+  save_dir: ./out/
 
   model: gpt2
   transformer_blocks_path: transformer.h
   fsdp_sharding_strategy: SHARD_GRAD_OP
+  fsdp_cpu_offload: false
+  fsdp_low_cpu_init: false
+  flash_attention_2: false
+  better_transformer: false
 
   seq_len: 1024
   global_batch_size: 64

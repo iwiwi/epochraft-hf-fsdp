@@ -1,0 +1,49 @@
+wandb:
+  url: https://stability.wandb.io
+  entity: stability-llm
+  project: jp-hffsdp-pretrain
+  name: stablelm-3b-4e1t.100btok
+
+trainer:
+  load_dir: null
+  save_dir: ??
+
+  model: stabilityai/stablelm-3b-4e1t
+  transformer_blocks_path: model.layers
+  fsdp_sharding_strategy: SHARD_GRAD_OP
+  fsdp_cpu_offload: false
+  fsdp_low_cpu_init: false
+  flash_attention_2: false
+  better_transformer: false
+
+  seq_len: 4096
+  global_batch_size: 256  # 1M tokens per step
+  micro_batch_size: 1
+  steps: 100000
+
+  ckpt_steps: 5000
+  val_steps: 200
+
+  zerolr_warmup_steps: 100
+  linear_warmup_steps: 900
+  cooldown_steps: 1000
+  max_lr: 0.000064   # maxlr=0.00032, bs=1024 was the original value used in English pretraining
+  min_lr: 0.0000064  # minlr=0.0000128
+  weight_decay: 0.1
+  grad_clip: 1.0
+  beta1: 0.9
+  beta2: 0.95
+  eps: 0.000001
+
+tokenizer: null
+
+val_samples: 1024
+val_dataset:
+  - name: dummy
+    url: dummy
+
+train_dataset:
+  - name: dummy
+    weight: 1
+    urls:
+      - dummy
