@@ -1,0 +1,49 @@
+wandb:
+  url: https://stability.wandb.io
+  entity: null
+  project: epochraft-hf-fsdp
+  name: llama2-7b_testrun_offload
+
+trainer:
+  load_dir: null
+  save_dir: ./out/
+
+  model: meta-llama/Llama-2-7b-hf
+  transformer_blocks_path: model.layers
+  fsdp_sharding_strategy: FULL_SHARD
+  fsdp_cpu_offload: true
+  fsdp_low_cpu_init: true
+  flash_attention_2: false
+  better_transformer: true
+
+  seq_len: 4096
+  global_batch_size: 8
+  micro_batch_size: 1
+  steps: 100
+
+  ckpt_steps: 50
+  val_steps: 20
+
+  zerolr_warmup_steps: 5
+  linear_warmup_steps: 10
+  cooldown_steps: 10
+  max_lr: 0.0001
+  min_lr: 0.00001
+  weight_decay: 0.1
+  grad_clip: 1.0
+  beta1: 0.9
+  beta2: 0.95
+  eps: 0.000001
+
+tokenizer: null
+
+val_samples: 64
+val_dataset:
+  - name: dummy
+    url: dummy
+
+train_dataset:
+  - name: dummy
+    weight: 1
+    urls:
+      - dummy
