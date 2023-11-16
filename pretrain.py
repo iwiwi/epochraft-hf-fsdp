@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Optional
+from typing import List, Optional
 
 from epochraft_hf_fsdp import config as config_module
 from epochraft_hf_fsdp import fsdp, logging, pretraining_data
@@ -15,8 +15,8 @@ class Config:
     trainer: TrainerConfig
 
     tokenizer: Optional[str]
-    train_dataset: list[pretraining_data.DataSource]
-    val_dataset: list[pretraining_data.DataSource]
+    train_dataset: List[pretraining_data.DataSource]
+    val_dataset: List[pretraining_data.DataSource]
     val_samples: int
 
 

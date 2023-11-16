@@ -5,7 +5,7 @@ import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
 from logging import getLogger
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Union
 
 from epochraft import CheckpointableDataset, Sample, braceexpand, interleave_datasets
 from joblib import Memory
@@ -22,7 +22,7 @@ class DataSource:
 
     # OmegaConf does not support Union :(
     url: Optional[str] = None
-    urls: Optional[list[str]] = None
+    urls: Optional[List[str]] = None
 
     weight: float = 1.0
     n_active_shards: int = 4
