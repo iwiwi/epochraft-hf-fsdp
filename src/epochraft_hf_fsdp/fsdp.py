@@ -99,10 +99,8 @@ def setup_fsdp(
         cpu_offload=CPUOffload(offload_params=True) if cpu_offload else None,
         # Low CPU memory initialization
         sync_module_states=low_cpu_init,
-        param_init_fn=lambda module: (
-            module.to_empty(  # type: ignore
-                device=torch.cuda.current_device(), recurse=False  # type: ignore
-            )
+        param_init_fn=lambda module: (  # type: ignore
+            module.to_empty(device=torch.cuda.current_device(), recurse=False)  # type: ignore
             if low_cpu_init and rank != 0
             else None
         ),
